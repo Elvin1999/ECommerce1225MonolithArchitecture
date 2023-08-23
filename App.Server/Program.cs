@@ -1,4 +1,6 @@
 ﻿using App.Business.Concrete;
+using App.Entities.Concrete;
+using Newtonsoft.Json;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -19,17 +21,20 @@ namespace App.Server
         private static readonly byte[] buffer = new byte[BUFFER_SIZE];
         static void Main(string[] args)
         {
-            //Console.Title = "Server";
-            //SetupServer();
-            //Console.ReadLine();
-            //CloseAllSockets();
-
-            GetAllServicesAsText();
+            Console.Title = "Server";
+            SetupServer();
+            Console.ReadLine();
+            CloseAllSockets();
         }
 
         private static void CloseAllSockets()
         {
-            throw new NotImplementedException();
+            foreach (var client in clientSockets)
+            {
+                client.Shutdown(SocketShutdown.Both);
+                client.Close();
+            }
+            serverSocket.Close();   
         }
 
         private static void SetupServer()
@@ -61,7 +66,113 @@ namespace App.Server
 
         private static void ReceiveCallBack(IAsyncResult ar)
         {
+            Socket current=(Socket)ar.AsyncState;
+            int received;
+            try
+            {
+                received=current.EndReceive(ar);
+            }
+            catch (Exception)
+            {
+                Console.WriteLine("Client forcefully disconnected");
+                current.Close();
+                clientSockets.Remove(current);
+                return;
+            }
 
+            byte[] recBuf = new byte[received];
+            Array.Copy(buffer, recBuf, received);
+            string msg=Encoding.ASCII.GetString(recBuf);
+            Console.WriteLine(  "Received Text : "+msg);
+
+            if (msg.ToLower() == "exit")
+            {
+                current.Shutdown(SocketShutdown.Both);
+                current.Close();
+                clientSockets.Remove(current);
+                Console.WriteLine("Client disconnected");
+                return;
+            }
+            else if (msg != String.Empty)
+            {
+                try
+                {
+                    var result = msg.Split(new[] { ' ' }, 2);
+                    if (result.Length >= 2)
+                    {
+                        var jsonPart = result[1];
+
+                        var subResult = result[0].Split('\\');
+
+                        var className = subResult[0];
+                        var methodName = subResult[1];
+
+
+                        var myType = Assembly.GetAssembly(typeof(ProductService)).GetTypes()
+                          .FirstOrDefault(t => t.Name.Contains(className));
+
+                        var myEntityType=Assembly.GetAssembly(typeof(Product)).GetTypes()
+                            .FirstOrDefault(a=>a.FullName.Contains(className));
+
+
+
+                        var obj = JsonConvert.DeserializeObject(jsonPart, myEntityType);
+
+                        var methods = myType.GetMethods();
+                        MethodInfo myMethod = methods.FirstOrDefault(m => m.Name.Contains(methodName));
+
+                        object myInstance = Activator.CreateInstance(myType);
+
+                        myMethod.Invoke(myInstance,new object[] { obj });
+
+                        byte[]data=Encoding.ASCII.GetBytes("POST Operation SUCCESSFULLY");
+                        current.Send(data);
+                    }
+                    else
+                    {
+                        result = msg.Split('\\');
+                        var className = result[0];
+                        var methodName = result[1];
+
+                        var myType=Assembly.GetAssembly(typeof(ProductService)).GetTypes()
+                            .FirstOrDefault(t => t.Name.Contains(className));
+                        
+                        if (myType != null)
+                        {
+                            var methods = myType.GetMethods();
+                            MethodInfo myMethod = methods.FirstOrDefault(m => m.Name.Contains(methodName));
+
+                            object myInstance=Activator.CreateInstance(myType);
+
+                            var paramId = -1;
+                            var jsonString = String.Empty;
+                            object objectResponse = null;
+
+                            if (result.Length == 3)
+                            {
+                                paramId = int.Parse(result[2]);
+                                objectResponse=myMethod.Invoke(myInstance, new object[] { paramId });
+                            }
+                            else
+                            {
+                                objectResponse = myMethod.Invoke(myInstance,null);
+                            }
+
+                            jsonString=JsonConvert.SerializeObject(objectResponse);
+                            byte[]data= Encoding.ASCII.GetBytes(jsonString);
+                            current.Send(data);
+
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine(ex.Message);
+                }
+            }
+
+            current.BeginReceive(buffer, 0, BUFFER_SIZE, SocketFlags.None, ReceiveCallBack, current);
+           
         }
 
         private static void SendServiceResponseToClient(Socket client)
